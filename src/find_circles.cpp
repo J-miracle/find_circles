@@ -18,16 +18,18 @@ struct color_hsv
 	int LowH; int HighH;
 	int LowS; int HighS;//red(0,10,50,255,30,255)
 	int LowV; int HighV;
-}blue_hsv={75,130,50,255,0,255},green_hsv={35,77,50,255,40,255};
+}blue_hsv={75,130,50,255,0,255},green_hsv={35,77,50,255,45,255};
 
 float intrinsic[3][3] = {6.4436785110533890e+02, 0, 2.9885092211551677e+02, 0, 6.4885508011959678e+02, 2.5164505741385921e+02, 0, 0, 1};
 float distortion[1][5] = {-4.9274063450470956e-01, 4.1714464548108104e-01, -1.4831388242744629e-03, 4.0691561547865065e-03, -2.0223623888412184e-01};
 
-class FindCicles
+class FindCircles
 {
 public:
-	FindCicles();
-	~FindCicles();
+	FindCircles();
+	~FindCircles();
+	void measurement(double &x, double &y, double u, double v, double h);
+	void revmeasurement(double x, double y, double &u, double &v, double h);
 private:
 	ros::NodeHandle node;
 	ros::Subscriber img_sub;
@@ -47,36 +49,36 @@ private:
 	double current_pos[2];
 };
 
-FindCicles::FindCicles()
+FindCircles::FindCircles()
 {
-	img_sub = node.subscribe("CamImage", 1, &FindCicles::imageCallback, this);
-	altitude_sub = node.subscribe("/ardrone/navdata_altitude", 1, &FindCicles::altitudeCallback, this);
-	navdata_sub = node.subscribe("/ardrone/navdata", 1, &FindCicles::navdataCallback, this);
+	img_sub = node.subscribe("/ardrone/image_raw", 1, &FindCircles::imageCallback, this);//"/ardrone/image_raw" "CamImage"
+	altitude_sub = node.subscribe("/ardrone/navdata_altitude", 1, &FindCircles::altitudeCallback, this);
+	navdata_sub = node.subscribe("/ardrone/navdata", 1, &FindCircles::navdataCallback, this);
 	midPoint_pub = node.advertise<geometry_msgs::Point>("terminal", 1000); //the message of centers is uncertain.
 	//Mat src_img = imread("/home/wade/catkin_ws/src/find_circles/src/t.jpg", 1);//testing
 	//image_process(src_img);//testing 
 }
 
-FindCicles::~FindCicles()
+FindCircles::~FindCircles()
 {}
 
-void FindCicles::altitudeCallback(const ardrone_autonomy::navdata_altitude &msg)
+void FindCircles::altitudeCallback(const ardrone_autonomy::navdata_altitude &msg)
 {
 	height = msg.altitude_vision/1000.0 * cos(roll) * cos(pitch);
 	current_pos[0] = msg.altitude_vision/1000.0 * sin(roll);
 	current_pos[1] = msg.altitude_vision/1000.0 *sin(pitch);
-	cout << "position: " << height << '\t' << current_pos[0] << '\t' << current_pos[1] << endl;
+	//cout << "position: " << height << '\t' << current_pos[0] << '\t' << current_pos[1] << endl;
 }
 
-void FindCicles::navdataCallback(const ardrone_autonomy::Navdata &msg)
+void FindCircles::navdataCallback(const ardrone_autonomy::Navdata &msg)
 {
 	roll = msg.rotX/180.0*3.1416;
 	pitch = msg.rotY/180.0*3.1416;
 	yaw = msg.rotZ/180.0*3.1416;
-	cout << "angles: " << roll << '\t' << pitch << '\t' << yaw << endl;
+	//cout << "angles: " << roll << '\t' << pitch << '\t' << yaw << endl;
 }
 
-void FindCicles::imageCallback(const sensor_msgs::Image &msg)
+void FindCircles::imageCallback(const sensor_msgs::Image &msg)
 {
 	cv_bridge::CvImagePtr cv_ptr;
 	try
@@ -92,7 +94,7 @@ void FindCicles::imageCallback(const sensor_msgs::Image &msg)
 	image_process(cv_ptr->image);
 }
 
-void FindCicles::image_process(Mat img)
+void FindCircles::image_process(Mat img)
 {
 	/*undistort*/
 	Size image_size = img.size();
@@ -155,14 +157,53 @@ void FindCicles::image_process(Mat img)
 		ros::spin();
 	}
 
-	/*use midPoint in image to get the relative position*/
+	/*use midPoint in image*/
 	Rect rb = boundingRect(Mat(contours[0]));
 	geometry_msgs::Point midP;
 	midP.x = 0.5*(rb.tl().x + rb.br().x);
 	midP.y = 0.5*(rb.tl().y + rb.br().y);
+	cout << "circle center: " << midP.x << '\t' << midP.y << endl;
+
+	/* to get the actual relative position*/
+	cv::Point2d ardrone_pos;
+	measurement(ardrone_pos.x, ardrone_pos.y, current_pos[0], current_pos[1], height);
+	ardrone_pos.x += image_size.width/2;
+	ardrone_pos.y += image_size.height/2;
+	cout << "ardrone_pos in image: " << ardrone_pos.x << '\t' << ardrone_pos.y << endl;
+	//cv::Point center;
+	//center.x = ardrone_pos.x; center.y = ardrone_pos.y;
+	//cout << "center in image: " << center.x << '\t' << center.y << endl;
+	circle(img, ardrone_pos, 10, Scalar(0, 0, 255), 1, 8);
+	
+	midP.x -= ardrone_pos.x;
+	midP.y -= ardrone_pos.y;
+	geometry_msgs::Point dist;
+	revmeasurement(midP.x, midP.y, dist.x, dist.y, height);
+
 	/*publish the relative position of the circle center*/
-	midPoint_pub.publish(midP);
-	cout << midP.x << ", " << midP.y << endl;
+	midPoint_pub.publish(dist);
+	cout << "distant: " << dist.x << ", " << dist.y << endl;
+	/*evaluate the error of distant*/
+	string save0 = "/home/wade/catkin_ws/src/find_circles/test_file/distantx.xls";
+	string save1 = "/home/wade/catkin_ws/src/find_circles/test_file/distanty.xls";
+	string save2 = "/home/wade/catkin_ws/src/find_circles/test_file/height.xls";
+	string save3 = "/home/wade/catkin_ws/src/find_circles/test_file/pitch.xls";
+	string save4 = "/home/wade/catkin_ws/src/find_circles/test_file/roll.xls";
+	FileStorage fs0(save1, FileStorage::APPEND);
+	FileStorage fs1(save1, FileStorage::APPEND);
+	FileStorage fs2(save1, FileStorage::APPEND);
+	FileStorage fs3(save1, FileStorage::APPEND);
+	FileStorage fs4(save1, FileStorage::APPEND);
+	fs0 << dist.x;
+	fs1 << dist.y;
+	fs2 << height;
+	fs3 << pitch;
+	fs4 << roll;
+	fs0.release();
+	fs1.release();
+	fs2.release();
+	fs3.release();
+	fs4.release();
 
 	imshow("monitor", img);//testing
 	if (char(waitKey(1)) == 'o')
@@ -173,10 +214,21 @@ void FindCicles::image_process(Mat img)
 	//destroyWindow("init_show");//testing
 }
 
+void FindCircles::measurement(double &x, double &y, double u, double v, double h)
+{
+	x = 1000 * u / (1.55 * h + 0.01078);
+	y = 1000 * v / (1.55 * h + 0.01078);
+}
+void FindCircles::revmeasurement(double x, double y, double &u, double &v, double h)
+{
+	u = (1.55 * h + 0.01078) / 1000 * x;
+	v = (1.55 * h + 0.01078) / 1000 * y;
+}
+
 int main(int argc, char **argv)
 {
 	ros::init(argc, argv, "find_cicles");
-	FindCicles fc;
+	FindCircles fc;
 	ros::spin();
 	return 0;
 }
