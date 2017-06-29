@@ -15,7 +15,7 @@
 using namespace cv;
 using namespace std;
 
-#define DATA_SIZE 500
+#define DATA_SIZE 600
 
 struct color_hsv
 {
