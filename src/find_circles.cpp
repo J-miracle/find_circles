@@ -9,9 +9,13 @@
 #include <cv_bridge/cv_bridge.h>
 #include <image_transport/image_transport.h>
 #include <vector>
+#include <iostream>
+#include <fstream>
 
 using namespace cv;
 using namespace std;
+
+#define DATA_SIZE 500
 
 struct color_hsv
 {
@@ -27,9 +31,9 @@ class FindCircles
 {
 public:
 	FindCircles();
-	~FindCircles();
 	void measurement(double &x, double &y, double u, double v, double h);
 	void revmeasurement(double x, double y, double &u, double &v, double h);
+	void writeData();
 private:
 	ros::NodeHandle node;
 	ros::Subscriber img_sub;
@@ -42,11 +46,14 @@ private:
 	void navdataCallback(const ardrone_autonomy::Navdata &msg);
 	void image_process(Mat img);
 
+	int data_count = 0;
 	double height;
 	double roll = 0.0;
 	double pitch = 0.0;
 	double yaw = 0.0;
 	double current_pos[2];
+	double distant[DATA_SIZE][2];
+	double pose[DATA_SIZE][3];
 };
 
 FindCircles::FindCircles()
@@ -59,8 +66,18 @@ FindCircles::FindCircles()
 	//image_process(src_img);//testing 
 }
 
-FindCircles::~FindCircles()
-{}
+void FindCircles::writeData()
+{
+	/*save for evaluating the error of distant*/
+	Mat distantm = Mat(DATA_SIZE, 2, CV_64FC1, distant);
+	Mat posem = Mat(DATA_SIZE, 3, CV_64FC1, pose);
+	ofstream f1("/home/wade/catkin_ws/src/find_circles/test_file/distant.csv");
+	f1 << format(distantm, Formatter::FMT_CSV);
+	ofstream f2("/home/wade/catkin_ws/src/find_circles/test_file/pose.csv");
+	f2 << format(posem, Formatter::FMT_CSV);
+	f1.close();
+	f2.close();
+}
 
 void FindCircles::altitudeCallback(const ardrone_autonomy::navdata_altitude &msg)
 {
@@ -96,6 +113,12 @@ void FindCircles::imageCallback(const sensor_msgs::Image &msg)
 
 void FindCircles::image_process(Mat img)
 {
+	/*evaluation*/
+	if (data_count == DATA_SIZE)
+	{
+		writeData();
+		exit(0);
+	}
 	/*undistort*/
 	Size image_size = img.size();
 	Mat R = Mat::eye(3, 3, CV_32F);
@@ -154,6 +177,9 @@ void FindCircles::image_process(Mat img)
 	if (contours.empty())
 	{
 		cout << "Not found!\n";
+		imshow("monitor", img);//testing
+		if (char(waitKey(1)) == 'o')
+			destroyWindow("monitor");
 		ros::spin();
 	}
 
@@ -162,18 +188,18 @@ void FindCircles::image_process(Mat img)
 	geometry_msgs::Point midP;
 	midP.x = 0.5*(rb.tl().x + rb.br().x);
 	midP.y = 0.5*(rb.tl().y + rb.br().y);
-	cout << "circle center: " << midP.x << '\t' << midP.y << endl;
+	//cout << "circle center: " << midP.x << '\t' << midP.y << endl;
 
 	/* to get the actual relative position*/
 	cv::Point2d ardrone_pos;
 	measurement(ardrone_pos.x, ardrone_pos.y, current_pos[0], current_pos[1], height);
-	ardrone_pos.x += image_size.width/2;
-	ardrone_pos.y += image_size.height/2;
+	ardrone_pos.x = ardrone_pos.x + image_size.width/2;
+	ardrone_pos.y = -ardrone_pos.y + image_size.height/2 - 50;
 	cout << "ardrone_pos in image: " << ardrone_pos.x << '\t' << ardrone_pos.y << endl;
 	//cv::Point center;
 	//center.x = ardrone_pos.x; center.y = ardrone_pos.y;
 	//cout << "center in image: " << center.x << '\t' << center.y << endl;
-	circle(img, ardrone_pos, 10, Scalar(0, 0, 255), 1, 8);
+	circle(img, ardrone_pos, 10, Scalar(0, 255, 255), 1, 8);
 	
 	midP.x -= ardrone_pos.x;
 	midP.y -= ardrone_pos.y;
@@ -183,33 +209,16 @@ void FindCircles::image_process(Mat img)
 	/*publish the relative position of the circle center*/
 	midPoint_pub.publish(dist);
 	cout << "distant: " << dist.x << ", " << dist.y << endl;
-	/*evaluate the error of distant*/
-	string save0 = "/home/wade/catkin_ws/src/find_circles/test_file/distantx.xls";
-	string save1 = "/home/wade/catkin_ws/src/find_circles/test_file/distanty.xls";
-	string save2 = "/home/wade/catkin_ws/src/find_circles/test_file/height.xls";
-	string save3 = "/home/wade/catkin_ws/src/find_circles/test_file/pitch.xls";
-	string save4 = "/home/wade/catkin_ws/src/find_circles/test_file/roll.xls";
-	FileStorage fs0(save1, FileStorage::APPEND);
-	FileStorage fs1(save1, FileStorage::APPEND);
-	FileStorage fs2(save1, FileStorage::APPEND);
-	FileStorage fs3(save1, FileStorage::APPEND);
-	FileStorage fs4(save1, FileStorage::APPEND);
-	fs0 << dist.x;
-	fs1 << dist.y;
-	fs2 << height;
-	fs3 << pitch;
-	fs4 << roll;
-	fs0.release();
-	fs1.release();
-	fs2.release();
-	fs3.release();
-	fs4.release();
+	distant[data_count][0] = dist.x;
+	distant[data_count][1] = dist.y;
+	pose[data_count][0] = height;
+	pose[data_count][1] = pitch;
+	pose[data_count][2] = roll;
+	cout << data_count++ << endl;
 
 	imshow("monitor", img);//testing
 	if (char(waitKey(1)) == 'o')
-	{
 		destroyWindow("monitor");
-	}
 	//waitKey(0);//testing
 	//destroyWindow("init_show");//testing
 }
