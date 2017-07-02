@@ -53,7 +53,8 @@ find_package(catkin REQUIRED COMPONENTS
  add_message_files(
    FILES
 #   Message1.msg
-   PointArray.msg
+   real_point.msg
+   image_point.msg
  )
 
 ## Generate services in the 'srv' folder
