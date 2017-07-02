@@ -11,18 +11,14 @@
 #include <vector>
 #include <iostream>
 #include <fstream>
+#include "find_circles/PointArray.h"
 
 using namespace cv;
 using namespace std;
 
 #define DATA_SIZE 600
-
-struct color_hsv
-{
-	int LowH; int HighH;
-	int LowS; int HighS;//red(0,10,50,255,30,255)
-	int LowV; int HighV;
-}blue_hsv={75,130,50,255,0,255},green_hsv={35,77,50,255,45,255};
+#define R_DFNT 15
+#define G_DFNT 10
 
 float intrinsic[3][3] = {6.4436785110533890e+02, 0, 2.9885092211551677e+02, 0, 6.4885508011959678e+02, 2.5164505741385921e+02, 0, 0, 1};
 float distortion[1][5] = {-4.9274063450470956e-01, 4.1714464548108104e-01, -1.4831388242744629e-03, 4.0691561547865065e-03, -2.0223623888412184e-01};
@@ -31,27 +27,32 @@ class FindCircles
 {
 public:
 	FindCircles();
-	void measurement(double &x, double &y, double u, double v, double h);
-	void revmeasurement(double x, double y, double &u, double &v, double h);
+	void measurement(double &x, double &y, double u, double v, double pitch, double roll, double h);
+	void revmeasurement(double x, double y, double &u, double &v, double pitch, double roll, double h);
 	void writeData();
 private:
 	ros::NodeHandle node;
 	ros::Subscriber img_sub;
 	ros::Subscriber altitude_sub;
 	ros::Subscriber navdata_sub;
-	ros::Publisher midPoint_pub;
+	ros::Publisher green_pub;
+	ros::Publisher red_pub;//!!!first,write a msg;second,declare in build function and use it in find_red and red_pub 
 
 	void imageCallback(const sensor_msgs::Image &msg);
 	void altitudeCallback(const ardrone_autonomy::navdata_altitude &msg);
 	void navdataCallback(const ardrone_autonomy::Navdata &msg);
 	void image_process(Mat img);
+	bool find_green(Mat img, Mat &imgThresholded);
+	void find_red(Mat img, Mat &imgThresholded);
 
+	bool isGreenFound;
 	int data_count = 0;
 	double height;
 	double roll = 0.0;
 	double pitch = 0.0;
 	double yaw = 0.0;
 	double current_pos[2];
+	cv::Point2d ardrone_pos;
 	double distant[DATA_SIZE][2];
 	double pose[DATA_SIZE][3];
 };
@@ -61,7 +62,8 @@ FindCircles::FindCircles()
 	img_sub = node.subscribe("/ardrone/image_raw", 1, &FindCircles::imageCallback, this);//"/ardrone/image_raw" "CamImage"
 	altitude_sub = node.subscribe("/ardrone/navdata_altitude", 1, &FindCircles::altitudeCallback, this);
 	navdata_sub = node.subscribe("/ardrone/navdata", 1, &FindCircles::navdataCallback, this);
-	midPoint_pub = node.advertise<geometry_msgs::Point>("terminal", 1000); //the message of centers is uncertain.
+	green_pub = node.advertise<geometry_msgs::Point>("green_point", 1000); //the message of centers is uncertain.
+	red_pub = node.advertise<find_circles::PointArray>("red_points", 1000);
 	//Mat src_img = imread("/home/wade/catkin_ws/src/find_circles/src/t.jpg", 1);//testing
 	//image_process(src_img);//testing 
 }
@@ -81,9 +83,9 @@ void FindCircles::writeData()
 
 void FindCircles::altitudeCallback(const ardrone_autonomy::navdata_altitude &msg)
 {
-	height = msg.altitude_vision/1000.0 * cos(roll) * cos(pitch);
-	current_pos[0] = msg.altitude_vision/1000.0 * sin(roll);
-	current_pos[1] = msg.altitude_vision/1000.0 *sin(pitch);
+	height = msg.altitude_vision/1000.0;
+	current_pos[0] = -msg.altitude_vision/1000.0 * tan(roll);
+	current_pos[1] = msg.altitude_vision/1000.0 * tan(pitch);
 	//cout << "position: " << height << '\t' << current_pos[0] << '\t' << current_pos[1] << endl;
 }
 
@@ -131,22 +133,43 @@ void FindCircles::image_process(Mat img)
 	//imshow("init_show", img);//testing
 	//waitKey(0);//testing
 
+	/* to get the actual relative position*/
+	measurement(ardrone_pos.x, ardrone_pos.y, current_pos[0], current_pos[1], pitch, roll, height);
+	ardrone_pos.x = -ardrone_pos.x + image_size.width/2;
+	ardrone_pos.y = -ardrone_pos.y + image_size.height/2 - 45;
+	cout << "ardrone_pos in image: " << ardrone_pos.x << '\t' << ardrone_pos.y << endl;
+	//cv::Point center;
+	//center.x = ardrone_pos.x; center.y = ardrone_pos.y;
+	//cout << "center in image: " << center.x << '\t' << center.y << endl;
+	circle(img, ardrone_pos, 10, Scalar(0, 255, 255), 1, 8);
+
 	/*color abstract*/
-	int iLowH = green_hsv.LowH; int iHighH = green_hsv.HighH;
-	int iLowS = green_hsv.LowS; int iHighS = green_hsv.HighS;
-	int iLowV = green_hsv.LowV; int iHighV = green_hsv.HighV;
-	
-	//RGB to HSV
-	Mat imgHSV, imgThresholded;
-	vector<Mat> hsvSplit;
-	cvtColor(img, imgHSV, COLOR_BGR2HSV);
-	
-	//threshold HSV
-	split(imgHSV, hsvSplit);
-	equalizeHist(hsvSplit[2], hsvSplit[2]);
-	merge(hsvSplit, imgHSV);
-	inRange(imgHSV, Scalar(iLowH, iLowS, iLowV), Scalar(iHighH, iHighS, iHighV), imgThresholded);
-	
+	Mat imgThresholded = Mat(image_size, CV_8UC1);
+	isGreenFound = find_green(img, imgThresholded);
+	if (isGreenFound)
+		ros::spin();
+	else
+		find_red(img, imgThresholded);
+}
+
+bool FindCircles::find_green(Mat img, Mat &imgThresholded)
+{
+	for (int i = 0; i < img.rows; ++i)
+	{
+		for (int j = 0; j < img.cols; ++j)
+		{
+			int tmp0 = img.at<Vec3b>(i,j)[0];
+			int tmp1 = img.at<Vec3b>(i,j)[1];
+			int tmp2 = img.at<Vec3b>(i,j)[2];
+			if ((tmp1-tmp0)>=G_DFNT && (tmp1-tmp2)>=G_DFNT)
+			{
+				imgThresholded.at<uchar>(i,j) = 255;
+				continue;
+			}
+			imgThresholded.at<uchar>(i,j) = 0;
+		}
+	}
+
 	//image operation
 	Mat element = getStructuringElement(MORPH_RECT, Size(4,4));
 	morphologyEx(imgThresholded, imgThresholded, MORPH_OPEN, element);
@@ -175,63 +198,135 @@ void FindCircles::image_process(Mat img)
 	}
 	
 	if (contours.empty())
-	{
-		cout << "Not found!\n";
-		imshow("monitor", img);//testing
-		if (char(waitKey(1)) == 'o')
-			destroyWindow("monitor");
-		ros::spin();
-	}
-
-	/*use midPoint in image*/
+		return false;
 	Rect rb = boundingRect(Mat(contours[0]));
 	geometry_msgs::Point midP;
 	midP.x = 0.5*(rb.tl().x + rb.br().x);
 	midP.y = 0.5*(rb.tl().y + rb.br().y);
 	//cout << "circle center: " << midP.x << '\t' << midP.y << endl;
-
-	/* to get the actual relative position*/
-	cv::Point2d ardrone_pos;
-	measurement(ardrone_pos.x, ardrone_pos.y, current_pos[0], current_pos[1], height);
-	ardrone_pos.x = ardrone_pos.x + image_size.width/2;
-	ardrone_pos.y = -ardrone_pos.y + image_size.height/2 - 50;
-	cout << "ardrone_pos in image: " << ardrone_pos.x << '\t' << ardrone_pos.y << endl;
-	//cv::Point center;
-	//center.x = ardrone_pos.x; center.y = ardrone_pos.y;
-	//cout << "center in image: " << center.x << '\t' << center.y << endl;
-	circle(img, ardrone_pos, 10, Scalar(0, 255, 255), 1, 8);
 	
 	midP.x -= ardrone_pos.x;
 	midP.y -= ardrone_pos.y;
 	geometry_msgs::Point dist;
-	revmeasurement(midP.x, midP.y, dist.x, dist.y, height);
+	revmeasurement(midP.x, midP.y, dist.x, dist.y, pitch, roll, height);
 
 	/*publish the relative position of the circle center*/
-	midPoint_pub.publish(dist);
-	cout << "distant: " << dist.x << ", " << dist.y << endl;
-	distant[data_count][0] = dist.x;
-	distant[data_count][1] = dist.y;
-	pose[data_count][0] = height;
-	pose[data_count][1] = pitch;
-	pose[data_count][2] = roll;
-	cout << data_count++ << endl;
+	if (dist.x < 1 && dist.x > -1 && dist.y < 1 && dist.y > -1)
+	{
+		green_pub.publish(dist);
+		cout << "distant: " << dist.x << ", " << dist.y << endl;
+		distant[data_count][0] = dist.x;
+		distant[data_count][1] = dist.y;
+		pose[data_count][0] = height;
+		pose[data_count][1] = pitch;
+		pose[data_count][2] = roll;
+		cout << data_count++ << endl;
+	}
 
 	imshow("monitor", img);//testing
 	if (char(waitKey(1)) == 'o')
 		destroyWindow("monitor");
 	//waitKey(0);//testing
 	//destroyWindow("init_show");//testing
+	return true;
 }
 
-void FindCircles::measurement(double &x, double &y, double u, double v, double h)
+void FindCircles::find_red(Mat img, Mat &imgThresholded)
 {
-	x = 1000 * u / (1.55 * h + 0.01078);
-	y = 1000 * v / (1.55 * h + 0.01078);
+	for (int i = 0; i < img.rows; ++i)
+	{
+		for (int j = 0; j < img.cols; ++j)
+		{
+			int tmp0 = img.at<Vec3b>(i,j)[0];
+			int tmp1 = img.at<Vec3b>(i,j)[1];
+			int tmp2 = img.at<Vec3b>(i,j)[2];
+			if ((tmp2-tmp1)>=R_DFNT && (tmp2-tmp0)>=R_DFNT)
+			{
+				imgThresholded.at<uchar>(i,j) = 255;
+				continue;
+			}
+			imgThresholded.at<uchar>(i,j) = 0;
+		}
+	}
+
+	//image operation
+	Mat element = getStructuringElement(MORPH_RECT, Size(4,4));
+	morphologyEx(imgThresholded, imgThresholded, MORPH_OPEN, element);
+	morphologyEx(imgThresholded, imgThresholded, MORPH_CLOSE, element);	
+	erode(imgThresholded, imgThresholded, element);
+	dilate(imgThresholded, imgThresholded, element);
+	imgThresholded = 255 - imgThresholded;
+
+	//find contours
+	vector<vector<Point> > contours;
+	vector<Rect> rb;
+	vector<Vec4i> hierarchy;
+	findContours(imgThresholded, contours, hierarchy, CV_RETR_CCOMP, CV_CHAIN_APPROX_NONE);
+	
+	//erase unqualified contours
+	vector<vector<Point> >::iterator it = contours.begin();
+	while(it != contours.end())
+	{
+		if (contourArea(*it, true) < 500)
+			it = contours.erase(it);
+		else
+		{
+			Rect r = boundingRect(Mat(*it));
+			rb.push_back(r);//testing
+			rectangle(img, r, Scalar(0, 255, 0), 3);//testing
+			++it;
+		}
+	}
+	
+	find_circles::PointArray msg;
+	vector<Rect>::iterator ir = rb.begin();
+	while(ir != rb.end())
+	{
+		geometry_msgs::Pose2D data;
+		data.x = 0.5*((*ir).tl().x + (*ir).br().x);
+		data.y = 0.5*((*ir).tl().y + (*ir).br().y);
+		//cout << "circle center: " << midP.x << '\t' << midP.y << endl;
+	
+		data.x -= ardrone_pos.x;
+		data.y -= ardrone_pos.y;
+		geometry_msgs::Pose2D dist;
+		revmeasurement(data.x, data.y, dist.x, dist.y, pitch, roll, height);
+		msg.pose.push_back(data);
+	}
+	red_pub.publish(msg);
+	/*if (contours.empty())
+	{
+		cout << "Not found!\n";
+		imshow("monitor", img);//testing
+		if (char(waitKey(1)) == 'o')
+			destroyWindow("monitor");
+		ros::spin();
+	}*/
+
+	/*Rect rb = boundingRect(Mat(contours[0]));
+	publish_red(rb, img);
+
+	imshow("monitor", img);//testing
+	if (char(waitKey(1)) == 'o')
+		destroyWindow("monitor");
+	//waitKey(0);//testing
+	//destroyWindow("init_show");//testing
+	*/
 }
-void FindCircles::revmeasurement(double x, double y, double &u, double &v, double h)
+
+void FindCircles::measurement(double &x, double &y, double u, double v, double pitch, double roll, double h)
 {
-	u = (1.55 * h + 0.01078) / 1000 * x;
-	v = (1.55 * h + 0.01078) / 1000 * y;
+	double m = u * h / (h/cos(roll) + u*sin(roll));
+	double n = v * h / (h/cos(pitch) + u*sin(pitch));
+	x = 1000 * m / (1.55 * h + 0.01078);
+	y = 1000 * n / (1.55 * h + 0.01078);
+}
+void FindCircles::revmeasurement(double x, double y, double &u, double &v, double pitch, double roll, double h)
+{
+	double m = (1.55 * h + 0.01078) / 1000 * x;
+	double n = (1.55 * h + 0.01078) / 1000 * y;
+	u = m * h/cos(roll) / (h-m*sin(roll));
+	v = n * h/cos(pitch) / (h-n*sin(pitch));
 }
 
 int main(int argc, char **argv)
