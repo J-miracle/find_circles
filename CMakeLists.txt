@@ -140,6 +140,7 @@ include_directories(
 # add_executable(find_circles_node src/find_circles_node.cpp)
 add_executable(find_circles src/find_circles.cpp)
 add_executable(test src/test.cpp)
+add_executable(find_two src/find_two)
 
 ## Add cmake target dependencies of the executable
 ## same as for the library above
@@ -151,6 +152,7 @@ add_executable(test src/test.cpp)
 # )
 target_link_libraries(find_circles ${catkin_LIBRARIES})
 target_link_libraries(test ${catkin_LIBRARIES})
+target_link_libraries(find_two ${catkin_LIBRARIES})
 
 #############
 ## Install ##

@@ -23,7 +23,7 @@ using namespace std;
 }blue_hsv={75,130,43,255,46,255},green_hsv={35,77,43,255,46,255},
 red_hsv1{0,10,50,255,30,255},red_hsv2{155,179,43,255,46,255};*/
 
-#define R_DFNT 18
+#define R_DFNT 60
 #define G_DFNT 10
 
 float intrinsic[3][3] = {6.4436785110533890e+02, 0, 2.9885092211551677e+02, 0, 6.4885508011959678e+02, 2.5164505741385921e+02, 0, 0, 1};
@@ -59,8 +59,8 @@ Test::Test()
 	img_sub = node.subscribe("ardrone/image_raw", 1, &Test::imageCallback, this);
 	altitude_sub = node.subscribe("/ardrone/navdata_altitude", 1, &Test::altitudeCallback, this);
 	navdata_sub = node.subscribe("/ardrone/navdata", 1, &Test::navdataCallback, this);
-	/*Mat src = imread("/home/wade/catkin_ws/src/find_circles/test_image/test0.jpg");
-	image_test(src);*/
+	Mat src = imread("/home/wade/catkin_ws/src/position_estimate/test_file/test0.jpg");
+	image_test(src);
 }
 
 void Test::imageCallback(const sensor_msgs::Image &msg)
@@ -93,13 +93,13 @@ void Test::image_test(Mat img)
 
 	/*undistort*/
 	Size image_size = img.size();
-	Mat R = Mat::eye(3, 3, CV_32F);
+	/*Mat R = Mat::eye(3, 3, CV_32F);
 	Mat mapx = Mat(image_size, CV_32FC1);
 	Mat mapy = Mat(image_size, CV_32FC1);
 	Mat cameraMatrix = Mat(3,3,CV_32FC1,intrinsic);
     Mat distCoeffs = Mat(1,5,CV_32FC1,distortion);
 	initUndistortRectifyMap(cameraMatrix, distCoeffs, R, cameraMatrix, image_size, CV_32FC1, mapx, mapy);
-	remap(img, img, mapx, mapy, INTER_LINEAR);
+	remap(img, img, mapx, mapy, INTER_LINEAR);*/
 	/*imshow("init", img);
 	waitKey(0);*/
 
@@ -182,8 +182,8 @@ void Test::image_test(Mat img)
 		}
 	}
 
-	/*imshow("threshold", imgThresholded);
-	waitKey(0);*/
+	imshow("threshold", imgThresholded);
+	waitKey(0);
 	
 	//image operation
 	Mat element = getStructuringElement(MORPH_RECT, Size(3,3));
@@ -202,7 +202,7 @@ void Test::image_test(Mat img)
 	vector<vector<Point> >::iterator it = contours.begin();
 	while(it != contours.end())
 	{
-		if (contourArea(*it, true) < 500)
+		if (contourArea(*it, true) < 200)
 			it = contours.erase(it);
 		else
 		{
@@ -212,8 +212,7 @@ void Test::image_test(Mat img)
 		}
 	}
 	imshow("img", img);
-	if (char(waitKey(1)) == 'o')
-		destroyWindow("img");
+	waitKey(0);
 	/*waitKey(0);
 	destroyWindow("threshold");
 	destroyWindow("init");
